@@ -457,8 +457,11 @@ a.btn{text-decoration:none}
 .event-card p{color:var(--muted);max-width:420px}
 @keyframes roll{from{transform:rotate(-200deg) scale(.4);opacity:0}}
 .opt-list{display:grid;gap:6px}
-.form .disc{display:flex;gap:8px;flex-wrap:wrap}
-.form .disc label.check{position:relative;padding:7px 18px;border:1px solid var(--line);border-radius:999px;font-weight:600;font-family:var(--font-mono)}
+.form .disc{display:flex;gap:6px;flex-wrap:wrap}
+.form .checks.gdisc{display:grid;grid-template-columns:1fr;gap:6px}
+.form .gd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.form .gd-row .disc label.check{padding:3px 12px;font-size:12.5px}
+.form .disc label.check{position:relative;padding:6px 16px;border:1px solid var(--line);border-radius:999px;font-weight:600;font-family:var(--font-mono)}
 .form .disc input{position:absolute;opacity:0;pointer-events:none}
 .form .disc label.check:has(input:checked){background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .form .disc label.check:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
@@ -759,6 +762,9 @@ const wdOf=d=>(d.getDay()+6)%7+1;
 const ymOf=(y,m)=>`${y}-${pad(m+1)}`;
 const toMin=t=>{const[h,m]=t.split(':').map(Number);return h*60+m};
 const byId=(arr,id)=>arr.find(x=>x.id===id);
+/* a student's discount on a course at a date (see discHist below) and a price after it */
+const discountAt=(s,ds,gid)=>{let b=null;for(const e of s?.discHist||[])if((!e.gid||e.gid===gid)&&e.from<=ds&&(!b||e.from>=b.from))b=e;return b?b.pct:0};
+const withDisc=(price,pct)=>pct?Math.round(price*(100-pct)/100):price;
 const WD=['Пн','Вт','Ср','Чт','Пт','Сб','Нд'];
 const WD_FULL=['Понеділок','Вівторок','Середа','Четвер','Пʼятниця','Субота','Неділя'];
 const MONTHS=['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
@@ -1022,7 +1028,9 @@ function demoPayers(st){
    each group then keeps its own account, so one course can be in debt while another has money left */
 function splitAmount(amount,gids){const out={},n=gids.length;if(!n)return out;const base=Math.floor(amount/n);let rest=amount-base*n;gids.forEach(g=>{out[g]=base+(rest>0?1:0);rest--});return out}
 function splitGids(st,sid,per){
-  const cur=st.groups.filter(g=>g.studentIds.includes(sid)).map(g=>g.id);if(cur.length)return cur;
+  const stu=st.students.find(x=>x.id===sid),day=per?per+'-28':todayIso();
+  const cur=st.groups.filter(g=>g.studentIds.includes(sid)).map(g=>g.id),paying=cur.filter(gid=>discountAt(stu,day,gid)<100);
+  if(paying.length)return paying;if(cur.length)return cur;
   const ids=new Set(),add=(gid,ds)=>{if((!per||ds.startsWith(per))&&st.groups.some(g=>g.id===gid))ids.add(gid)};
   for(const k in st.attendance){const i=k.indexOf('|'),m=st.attendance[k].marks[sid];if(m==='p'||m==='l')add(k.slice(0,i),k.slice(i+1))}
   st.makeups.forEach(mu=>{if(mu.studentId===sid&&mu.status==='done')add(mu.groupId,mu.date)});
@@ -1123,16 +1131,20 @@ function ageOf(b){if(!b)return null;const d=parse(b),t=T0();let a=t.getFullYear(
 const ageText=b=>{const a=ageOf(b);return a==null?'':`${a} ${plural(a,['рік','роки','років'])}`};
 /* billing: payments go to the student's balance; each attended lesson (present or late) is charged at the group's lesson price */
 const lessonPrice=g=>g?(+g.lessonPrice||0):0;
-/* a student's discount (50% or 100%) applies to lessons from the day it was set; s.discHist keeps earlier lessons at their old price */
-const discountAt=(s,ds)=>{let p=0;for(const e of s?.discHist||[])if(e.from<=ds)p=e.pct;return p};
-const discountNow=s=>discountAt(s,todayIso());
-const withDisc=(price,pct)=>pct?Math.round(price*(100-pct)/100):price;
-const discPill=s=>{const d=discountNow(s);return d?`<span class="pill acc" title="Знижка на навчання">знижка ${d}%</span>`:''};
+/* discounts are set per course (group): 50% or 100% off its lessons from the first day of the month when set;
+   s.discHist=[{from,gid,pct}] keeps earlier months at their old price (an entry without gid is an older one for all courses) */
+const discountNow=(s,gid)=>discountAt(s,todayIso(),gid);
+/* studies for free: every current course at 100% — never pays and is never a debtor */
+const isFree=(s,ds=todayIso())=>{const gs=s?groupsOf(s.id):[];return gs.length>0&&gs.every(g=>discountAt(s,ds,g.id)===100)};
+const owedBal=sid=>{const b=balanceOf(sid);return b<0&&isFree(student(sid))?0:b};
+const discList=s=>s?groupsOf(s.id).map(g=>({g,pct:discountNow(s,g.id)})).filter(x=>x.pct):[];
+const discPill=s=>{const l=discList(s);if(!l.length)return '';const t=l.map(x=>`${x.g.name}: ${x.pct}%`).join(', ');
+  return `<span class="pill acc" title="Знижка: ${esc(t)}">${isFree(s)?'знижка 100%':'знижка '+[...new Set(l.map(x=>x.pct+'%'))].join(' / ')}</span>`};
 /* monthly fee is derived: lesson price × lessons of the group in that month (permanent schedule plus this month's changes) */
 const memo=(k,f)=>k in _mc?_mc[k]:(_mc[k]=f());
 function groupLessonsInMonth(gid,y,m){return memo(`gl|${gid}|${y}|${m}`,()=>{const out=[],last=new Date(y,m+1,0).getDate();for(let d=1;d<=last;d++)out.push(...lessonsOn(iso(new Date(y,m,d)),[gid]));return out})}
 const groupMonthFee=(g,y=T0().getFullYear(),m=T0().getMonth())=>lessonPrice(g)*groupLessonsInMonth(g.id,y,m).length;
-const monthlyFee=st=>st.status==='active'?withDisc(groupsOf(st.id).reduce((a,g)=>a+groupMonthFee(g),0),discountNow(st)):0;
+const monthlyFee=st=>st.status==='active'?groupsOf(st.id).reduce((a,g)=>a+withDisc(groupMonthFee(g),discountNow(st,g.id)),0):0;
 const shelterOf=g=>g?.shelterRoom||'укриття не вказано';
 const roomOf=l=>state.alarm?shelterOf(group(l.groupId)):l.room;
 const makeupsOf=({sid,gid,missed}={})=>state.makeups.filter(mu=>(!sid||mu.studentId===sid)&&(!gid||mu.groupId===gid)&&(!missed||mu.missedDate===missed));
@@ -1145,9 +1157,9 @@ function chargesOf(sid,{from,to}={}){
     const i=k.indexOf('|'),gid=k.slice(0,i),ds=k.slice(i+1);
     if((from&&ds<from)||(to&&ds>to))continue;
     const rec=state.attendance[k],v=rec.marks[sid];
-    if(v==='p'||v==='l')out.push({gid,ds,v,price:withDisc(rec.price!=null?+rec.price:lessonPrice(group(gid)),discountAt(st,ds))});
+    if(v==='p'||v==='l')out.push({gid,ds,v,price:withDisc(rec.price!=null?+rec.price:lessonPrice(group(gid)),discountAt(st,ds,gid))});
   }
-  state.makeups.forEach(mu=>{if(mu.studentId!==sid||mu.status!=='done')return;if((from&&mu.date<from)||(to&&mu.date>to))return;out.push({gid:mu.groupId,ds:mu.date,v:'m',price:withDisc(+mu.price||0,discountAt(st,mu.date))})});
+  state.makeups.forEach(mu=>{if(mu.studentId!==sid||mu.status!=='done')return;if((from&&mu.date<from)||(to&&mu.date>to))return;out.push({gid:mu.groupId,ds:mu.date,v:'m',price:withDisc(+mu.price||0,discountAt(st,mu.date,mu.groupId))})});
   return out;
 }
 const sumPrice=cs=>cs.reduce((a,c)=>a+c.price,0);
@@ -1189,10 +1201,10 @@ function groupEarnings(gid,from,to){
     const i=k.indexOf('|');if(k.slice(0,i)!==gid)continue;
     const ds=k.slice(i+1);if(ds<from||ds>to)continue;
     const rec=state.attendance[k],price=rec.price!=null?+rec.price:lessonPrice(group(gid));let any=false;
-    for(const [sid,v] of Object.entries(rec.marks)){any=true;if(v==='p'||v==='l'){sum+=withDisc(price,discountAt(student(sid),ds));visits++}}
+    for(const [sid,v] of Object.entries(rec.marks)){any=true;if(v==='p'||v==='l'){sum+=withDisc(price,discountAt(student(sid),ds,gid));visits++}}
     if(any)lessons++;
   }
-  state.makeups.forEach(mu=>{if(mu.groupId===gid&&mu.status==='done'&&mu.date>=from&&mu.date<=to){sum+=withDisc(+mu.price||0,discountAt(student(mu.studentId),mu.date));makeups++}});
+  state.makeups.forEach(mu=>{if(mu.groupId===gid&&mu.status==='done'&&mu.date>=from&&mu.date<=to){sum+=withDisc(+mu.price||0,discountAt(student(mu.studentId),mu.date,gid));makeups++}});
   return {sum,visits,lessons,makeups};
 }
 /* Teacher salary is paid from money students actually paid.
@@ -1347,9 +1359,10 @@ const btn=(label,act,cls='',ic='',attrs='')=>`<button type="button" class="btn $
 const pageHead=(title,sub,acts='')=>`<div class="page-head"><div><h1>${title}</h1>${sub?`<p>${sub}</p>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</div>`;
 const dlgHead=(title,sub='')=>`<div class="dlg-head"><div><h2>${title}</h2>${sub?`<p>${sub}</p>`:''}</div><button type="button" class="icon-btn" data-act="closeModal" aria-label="Закрити">${icon('x')}</button></div>`;
 const monthNav=k=>{const o=ui[k];return `<div class="mnav"><button type="button" class="icon-btn" data-act="mPrev" data-k="${k}" aria-label="Попередній місяць">${icon('left')}</button><b>${MONTHS[o.m]} ${o.y}</b><button type="button" class="icon-btn" data-act="mNext" data-k="${k}" aria-label="Наступний місяць">${icon('right')}</button><button type="button" class="btn sm ghost" data-act="mToday" data-k="${k}">Сьогодні</button></div>`};
-function balancePill(s,b=balanceOf(s.id)){
+function balancePill(s,b=owedBal(s.id)){
+  if(isFree(s))return `<span class="pill acc" title="Навчається безкоштовно">Знижка 100%</span>`;
   if(b<0)return `<span class="pill bad" title="Відвідано більше уроків, ніж оплачено">Борг ${money(-b)}</span>`;
-  const gs=groupsOf(s.id),min=gs.length?withDisc(Math.min(...gs.map(lessonPrice)),discountNow(s)):0;
+  const gs=groupsOf(s.id).filter(g=>discountNow(s,g.id)<100),min=gs.length?Math.min(...gs.map(g=>withDisc(lessonPrice(g),discountNow(s,g.id)))):0;
   if(gs.length&&b<min)return `<span class="pill warn" title="Коштів не вистачає на наступний урок">Баланс ${money(b)}</span>`;
   return `<span class="pill ${b>0?'ok':''}" title="Залишок на рахунку учня">Баланс ${money(b)}</span>`;
 }
@@ -1724,7 +1737,7 @@ function openStudent(id){
   <div class="sec"><h3>Контакти</h3><div class="kv">
     <div><span>Батьки / опікун</span>${esc(s.parentName)||'—'}</div>
     <div><span>Телефон</span><span class="mono" style="color:var(--fg);font-size:14px">${esc(s.parentPhone)||'—'}</span></div>
-    <div><span>Знижка</span>${(()=>{const d=discountNow(s),e=(s.discHist||[]).filter(x=>x.from<=todayIso()).pop();return d?`<b>${d}%</b> <span class="small muted">· з ${fmtDate(e.from,true)}${d===100?' · не входить до звіту бухгалтеру':''}</span>`:'немає'})()}</div>
+    <div><span>Знижка</span>${(()=>{const l=discList(s);return l.length?l.map(x=>`${esc(x.g.name)}: <b>${x.pct}%</b>`).join('<br>')+(isFree(s)?' <span class="small muted">· навчається безкоштовно, не входить до звіту бухгалтеру</span>':''):'немає'})()}</div>
     <div><span>Платник</span>${esc(payerOf(s).text)}${s.payerSame===false?'':' <span class="small muted">· батьки / опікун</span>'}</div>
     ${s.email?`<div><span>Ел. пошта</span>${esc(s.email)}</div>`:''}
     <div><span>В Академії з</span>${fmtDate(s.joined,true)}</div>
@@ -1786,10 +1799,11 @@ function studentForm(s){
       <label>Ким доводиться учню<select name="payerRel"><option value="">не вказано</option>${PAYER_RELS.map(r=>`<option ${s.payerRel===r?'selected':''}>${r}</option>`).join('')}</select></label></div>
       <span class="small muted">Платник потрапляє до місячного звіту бухгалтеру.</span>
     </fieldset>
-    <fieldset><legend>Знижка</legend><div class="disc">${[50,100].map(v=>`<label class="check"><input type="checkbox" name="disc" value="${v}" ${discountNow(s)===v?'checked':''} data-change="discOne">${v}%</label>`).join('')}</div>
-      <span class="small muted">Без позначки — без знижки. Знижка діє на уроки з дня, коли її встановлено. Учень зі знижкою 100% не потрапляє до звіту бухгалтеру.</span></fieldset>
+
     <div class="row2"><label>Ел. пошта<input id="sf-email" type="email" name="email" value="${esc(s.email)}"></label><label>Дата вступу<input id="sf-joined" type="date" name="joined" value="${esc(s.joined)}"></label></div>
-    <fieldset><legend>Групи (можна обрати кілька)</legend><div class="checks">${state.groups.map(g=>`<label class="check"><input type="checkbox" name="groups" value="${g.id}" ${gids.includes(g.id)?'checked':''}>${gchip(g)}<span class="muted small mono">${g.studentIds.length}/${g.capacity}</span></label>`).join('')}</div></fieldset>
+    <fieldset><legend>Групи та знижки</legend><div class="checks gdisc">${state.groups.map(g=>`<div class="gd-row"><label class="check"><input type="checkbox" name="groups" value="${g.id}" ${gids.includes(g.id)?'checked':''}>${gchip(g)}<span class="muted small mono">${g.studentIds.length}/${g.capacity}</span></label>
+      <div class="disc" role="group" aria-label="Знижка: ${esc(g.name)}">${[50,100].map(v=>`<label class="check" title="Знижка ${v}% на цей курс"><input type="checkbox" name="disc_${g.id}" value="${v}" ${s.id&&gids.includes(g.id)&&discountNow(s,g.id)===v?'checked':''} data-change="discOne">${v}%</label>`).join('')}</div></div>`).join('')}</div>
+      <span class="small muted">Знижку можна задати окремо для кожного курсу; без позначки знижки немає. Вона діє з першого числа поточного місяця. Учень зі знижкою 100% на всі курси не платить, не буває боржником і не потрапляє до звіту бухгалтеру.</span></fieldset>
     <label>Примітки<textarea id="sf-notes" name="notes" rows="2">${esc(s.notes)}</textarea></label>
     <div class="dlg-actions"><button type="button" class="btn ghost" data-act="closeModal">Скасувати</button><button class="btn primary" type="submit">${isNew?'Додати учня':'Зберегти'}</button></div>
   </form>`);
@@ -2417,12 +2431,13 @@ function acctData(per){
   const {from,to}=perRange(per),cov=coverage(),tOf=gid=>group(gid)?.teacherId||'',T={};
   const row=(tid,s)=>{const t=T[tid]=T[tid]||{tid,rows:{}};return t.rows[s.id]=t.rows[s.id]||{s,paid:0,debt:0}};
   state.students.forEach(s=>{
-    if(discountAt(s,to)===100)return;
+    if(isFree(s,to))return;
+    const free=gid=>discountAt(s,to,gid)===100;
     const ps=state.payments.filter(p=>p.studentId===s.id&&p.date>=from&&p.date<=to);
-    ps.forEach(p=>{const sp=splitOf(p),ks=Object.keys(sp);if(!ks.length){row('',s).paid+=+p.amount||0;return}ks.forEach(gid=>{row(tOf(gid),s).paid+=sp[gid]})});
-    cov.filter(x=>x.sid===s.id&&x.ds<=to&&(!x.at||x.at>to)).forEach(x=>{row(tOf(x.gid),s).debt+=x.amt});
-    chargesOf(s.id,{from,to}).forEach(c=>row(tOf(c.gid),s));
-    if(s.status!=='expelled'&&(s.joined||'')<=to)groupsOf(s.id).forEach(g=>row(g.teacherId,s));
+    ps.forEach(p=>{const sp=splitOf(p),ks=Object.keys(sp);if(!ks.length){row('',s).paid+=+p.amount||0;return}ks.forEach(gid=>{if(!free(gid))row(tOf(gid),s).paid+=sp[gid]})});
+    cov.filter(x=>x.sid===s.id&&x.ds<=to&&(!x.at||x.at>to)&&!free(x.gid)).forEach(x=>{row(tOf(x.gid),s).debt+=x.amt});
+    chargesOf(s.id,{from,to}).forEach(c=>{if(!free(c.gid))row(tOf(c.gid),s)});
+    if(s.status!=='expelled'&&(s.joined||'')<=to)groupsOf(s.id).forEach(g=>{if(!free(g.id))row(g.teacherId,s)});
   });
   const order=[...state.teachers.map(t=>t.id),''];
   return order.filter(id=>T[id]).map(id=>{const rows=Object.values(T[id].rows).sort((a,b)=>byName(a.s,b.s));
@@ -2805,7 +2820,7 @@ function salaryCard(x,m,pct){
 VIEWS.payments=()=>{
   const {y,m,filter,q}=ui.pay,per=ymOf(y,m);
   const rng=perRange(per);
-  const rows=state.students.filter(s=>myStudent(s.id)).map(s=>{const cs=chargesOf(s.id,rng);return {s,lessons:cs.length,charged:sumPrice(cs),paid:paidFor(s.id,per),bal:balanceOf(s.id)}})
+  const rows=state.students.filter(s=>myStudent(s.id)).map(s=>{const cs=chargesOf(s.id,rng);return {s,lessons:cs.length,charged:sumPrice(cs),paid:paidFor(s.id,per),bal:owedBal(s.id)}})
     .filter(r=>r.lessons||r.paid||r.bal||(r.s.status!=='expelled'&&groupsOf(r.s.id).length));
   const tot={charged:rows.reduce((a,r)=>a+r.charged,0),lessons:rows.reduce((a,r)=>a+r.lessons,0),paid:rows.reduce((a,r)=>a+r.paid,0),
     debt:rows.reduce((a,r)=>a+Math.max(0,-r.bal),0),debtors:rows.filter(r=>r.bal<0).length,pre:rows.reduce((a,r)=>a+Math.max(0,r.bal),0)};
@@ -2855,8 +2870,8 @@ function paymentForm(sid,per){
   payHint(true);
 }
 /* student list for the payment form: sorted by surname or grouped by group, marked when the month is paid, optionally only those who have not paid */
-function payState(st,per){const paid=paidFor(st.id,per),[y,m]=per.split('-').map(Number),d=discountAt(st,perRange(per).to),fee=st.status==='active'?withDisc(groupsOf(st.id).reduce((a,g)=>a+groupMonthFee(g,y,m-1),0),d):0;
-  return {paid,fee,full:d===100||(paid>0&&paid>=fee),part:d!==100&&paid>0&&paid<fee}}
+function payState(st,per){const paid=paidFor(st.id,per),[y,m]=per.split('-').map(Number),to=perRange(per).to,free=isFree(st,to),fee=st.status==='active'?groupsOf(st.id).reduce((a,g)=>a+withDisc(groupMonthFee(g,y,m-1),discountAt(st,to,g.id)),0):0;
+  return {paid,fee,full:free||(paid>0&&paid>=fee),part:!free&&paid>0&&paid<fee}}
 function payOpts(sid,per){
   const pk=ui.payPick||{sort:'name',unpaid:false};let list=state.students.filter(x=>myStudent(x.id)).sort(byName),total=list.filter(s=>s.status!=='expelled').length;
   if(pk.unpaid)list=list.filter(s=>s.status!=='expelled'&&!payState(s,per).full);
@@ -2877,9 +2892,9 @@ function payRefresh(){const sel=$('#pf-s'),per=$('#pf-per')?.value;if(!sel||!per
 function payHint(fill){
   const s=student($('#pf-s')?.value),per=$('#pf-per')?.value; if(!s||!per)return;
   const fee=monthlyFee(s),bal=balanceOf(s.id),gs=groupsOf(s.id);
-  const dn=discountNow(s);
-  $('#pf-hint').innerHTML=`<span>${dn===100?'<b>Знижка 100%: оплата за навчання не потрібна.</b> ':dn?`<b>Знижка ${dn}%</b> уже врахована. `:''}Баланс зараз <b>${money(bal)}</b>. ${gs.length?`Місячний внесок <b>${money(fee)}</b>: ${gs.map(g=>`${esc(g.name)} — ${money(withDisc(lessonPrice(g),dn))} за урок`).join('; ')}.`:'Учень не записаний до груп.'}</span>`;
-  if(fill||!$('#pf-amt').value)$('#pf-amt').value=Math.max(fee,-bal,0)||'';
+  const dl=discList(s);
+  $('#pf-hint').innerHTML=`<span>${isFree(s)?'<b>Знижка 100%: оплата за навчання не потрібна.</b> ':dl.length?`<b>Знижку вже враховано</b> (${dl.map(x=>esc(x.g.name)+' '+x.pct+'%').join(', ')}). `:''}Баланс зараз <b>${money(bal)}</b>. ${gs.length?`Місячний внесок <b>${money(fee)}</b>: ${gs.map(g=>`${esc(g.name)} — ${money(withDisc(lessonPrice(g),discountNow(s,g.id)))} за урок`).join('; ')}.`:'Учень не записаний до груп.'}</span>`;
+  if(fill||!$('#pf-amt').value)$('#pf-amt').value=isFree(s)?'':Math.max(fee,-bal,0)||'';
   paySplit();
 }
 function paySplit(){const el=$('#pf-split'),sid=$('#pf-s')?.value,per=$('#pf-per')?.value;if(!el||!sid)return;
@@ -2893,7 +2908,7 @@ VIEWS.reports=()=>{
   const att=attStats({from,to});
   const paid=state.payments.filter(p=>p.period===per).reduce((a,p)=>a+p.amount,0);
   const charged=state.students.reduce((a,s)=>a+sumPrice(chargesOf(s.id,{from,to})),0);
-  const debtors=state.students.map(s=>({s,left:-balanceOf(s.id)})).filter(x=>x.left>0).sort((a,b)=>b.left-a.left);
+  const debtors=state.students.map(s=>({s,left:-owedBal(s.id)})).filter(x=>x.left>0).sort((a,b)=>b.left-a.left);
   const archN=state.students.filter(s=>s.status==='expelled').length;
   const f30=iso(addDays(T0(),-30));
   const low=active.map(s=>({s,...attStats({sid:s.id,from:f30,to:todayIso()})})).filter(x=>x.tot>=3&&x.rate<75).sort((a,b)=>a.rate-b.rate);
@@ -3211,7 +3226,7 @@ const CHANGE={
     $('#tg-help').textContent=v?'«Опублікувати від імені бота» надішле текст у групу автоматично. «Скопіювати текст» дає змогу вставити його в групу вручну.':'Після відкриття групи вставте текст у поле повідомлення (Ctrl+V або довге натискання) і надішліть. Щоб бот публікував сам, вставте адресу вебхука Make.';if(v)toast('Адресу вебхука збережено')},
   tgLink:el=>{const v=el.value.trim();if(/^https:\/\/t\.me\//.test(v)){state.settings.tgLink=v;save();$('#tg-open').href=v}else toast('Посилання має починатися з https://t.me/','warn')},
   backupFile:el=>backupFile(el),
-  discOne:el=>{if(el.checked)el.form.querySelectorAll('input[name=disc]').forEach(x=>{if(x!==el)x.checked=false})},
+  discOne:el=>{if(!el.checked)return;el.form.querySelectorAll(`input[name="${el.name}"]`).forEach(x=>{if(x!==el)x.checked=false});const g=el.form.querySelector(`input[name=groups][value="${el.name.slice(5)}"]`);if(g)g.checked=true},
   payerSame:el=>{const i=$('#sf-payer');i.disabled=el.checked;i.required=!el.checked;i.placeholder=el.checked?'Як у полі «Батьки / опікун»':'Хто вносить оплату';if(el.checked)i.value='';else i.focus()},
   repPeriod:el=>{$('#rep-custom').hidden=el.value!=='custom'},
   rtScope:el=>{ui.rt.scope=el.value;render()},
@@ -3292,8 +3307,13 @@ const FORM={
     if(!s.joined)s.joined=todayIso();
     s.payerSame=fd.get('payerSame')==='on';s.payerName=s.payerSame?'':String(fd.get('payerName')||'').trim();s.payerRel=String(fd.get('payerRel')||'');
     if(ui.pendingPhoto!==undefined){s.photo=ui.pendingPhoto;ui.pendingPhoto=undefined}
-    const pct=+(fd.getAll('disc').pop()||0);
-    if(pct!==discountNow(s)){const from=id?todayIso():(s.joined<todayIso()?s.joined:todayIso());s.discHist=(s.discHist||[]).filter(e=>e.from<from);s.discHist.push({from,pct})}
+    {const t=T0(),m1=iso(new Date(t.getFullYear(),t.getMonth(),1)),from=id?m1:(s.joined<todayIso()?s.joined:todayIso());
+      let h=(s.discHist||[]).flatMap(e=>e.gid?[e]:state.groups.map(g=>({...e,gid:g.id})));   /* older all-course entries become per course */
+      const selG=s.status==='expelled'?[]:fd.getAll('groups');
+      state.groups.forEach(g=>{if(!selG.includes(g.id))return;const pct=+(fd.getAll('disc_'+g.id).pop()||0);if(pct===discountAt({discHist:h},todayIso(),g.id))return;
+        h=h.filter(e=>e.gid!==g.id||e.from<from);if(pct||h.some(e=>e.gid===g.id))h.push({from,gid:g.id,pct})});
+      h=h.filter(e=>state.groups.some(g=>g.id===e.gid)&&!(e.pct===0&&!h.some(x=>x.gid===e.gid&&x.from<e.from)));
+      if(h.length)s.discHist=h;else delete s.discHist}
     if(!id){s.no=state.nextNo++;state.students.push(s)}
     const sel=s.status==='expelled'?[]:fd.getAll('groups');
     state.groups.forEach(g=>{const has=g.studentIds.includes(s.id),want=sel.includes(g.id);if(want&&!has)g.studentIds.push(s.id);if(!want&&has)g.studentIds=g.studentIds.filter(x=>x!==s.id)});
