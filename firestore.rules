@@ -1,0 +1,25 @@
+rules_version = '2';
+// Правила доступу до бази Академії робототехніки ПУЕТ.
+// Читати й змінювати дані можуть лише адміністратор (за поштою нижче) і вчителі, яким адміністратор відкрив доступ у системі.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owner() { return signedIn() && request.auth.token.email != null
+                         && request.auth.token.email.lower() in ['wasilews2009@gmail.com']; }
+    function roleDoc() { return /databases/$(database)/documents/roles/$(request.auth.uid); }
+    function staff() { return owner() || (signedIn() && exists(roleDoc())); }
+    function admin() { return owner() || (signedIn() && exists(roleDoc()) && get(roleDoc()).data.role == 'admin'); }
+
+    // хто має доступ до системи і з якою роллю: керує лише адміністратор
+    match /roles/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow write: if admin();
+    }
+    // дані системи: виплати зарплати, витрати на бухгалтера й облікові записи змінює лише адміністратор
+    match /lms/{key} {
+      allow read: if staff();
+      allow write: if admin()
+        || (staff() && !key.matches('^(payouts|salaryAdj|users)(~[0-9]+)?$'));
+    }
+  }
+}
